@@ -29,44 +29,14 @@ from sklearn.pipeline import Pipeline
 
 from wordcloud import WordCloud, STOPWORDS
 
-
 train_df = pd.read_csv("../input/train.csv")
-test_df = pd.read_csv("../input/test.csv")
-print("Train shape : ", train_df.shape)
-print("Test shape : ", test_df.shape)
+# test_df = pd.read_csv("../input/test.csv")
+# print("Train shape : ", train_df.shape)
+# print("Test shape : ", test_df.shape)
+# all_df = pd.read_csv("../input/train.csv")
+# train_df, test_df = train_test_split(0.1, )
+train_df, test_df = train_test_split(train_df, test_size=0.1, random_state=12378)
 
-
-## Number of words in the text ##
-train_df["num_words"] = train_df["question_text"].apply(lambda x: len(str(x).split()))
-test_df["num_words"] = test_df["question_text"].apply(lambda x: len(str(x).split()))
-
-## Number of unique words in the text ##
-train_df["num_unique_words"] = train_df["question_text"].apply(lambda x: len(set(str(x).split())))
-test_df["num_unique_words"] = test_df["question_text"].apply(lambda x: len(set(str(x).split())))
-
-## Number of characters in the text ##
-train_df["num_chars"] = train_df["question_text"].apply(lambda x: len(str(x)))
-test_df["num_chars"] = test_df["question_text"].apply(lambda x: len(str(x)))
-
-## Number of stopwords in the text ##
-train_df["num_stopwords"] = train_df["question_text"].apply(lambda x: len([w for w in str(x).lower().split() if w in STOPWORDS]))
-test_df["num_stopwords"] = test_df["question_text"].apply(lambda x: len([w for w in str(x).lower().split() if w in STOPWORDS]))
-
-## Number of punctuations in the text ##
-train_df["num_punctuations"] =train_df['question_text'].apply(lambda x: len([c for c in str(x) if c in string.punctuation]) )
-test_df["num_punctuations"] =test_df['question_text'].apply(lambda x: len([c for c in str(x) if c in string.punctuation]) )
-
-## Number of title case words in the text ##
-train_df["num_words_upper"] = train_df["question_text"].apply(lambda x: len([w for w in str(x).split() if w.isupper()]))
-test_df["num_words_upper"] = test_df["question_text"].apply(lambda x: len([w for w in str(x).split() if w.isupper()]))
-
-## Number of title case words in the text ##
-train_df["num_words_title"] = train_df["question_text"].apply(lambda x: len([w for w in str(x).split() if w.istitle()]))
-test_df["num_words_title"] = test_df["question_text"].apply(lambda x: len([w for w in str(x).split() if w.istitle()]))
-
-## Average length of the words in the text ##
-train_df["mean_word_len"] = train_df["question_text"].apply(lambda x: np.mean([len(w) for w in str(x).split()]))
-test_df["mean_word_len"] = test_df["question_text"].apply(lambda x: np.mean([len(w) for w in str(x).split()]))
 
 # Get the tfidf vectors #
 tfidf_vec = TfidfVectorizer(stop_words='english', ngram_range=(1,3))
@@ -96,7 +66,53 @@ for dev_index, val_index in kf.split(train_df):
     cv_scores.append(metrics.log_loss(val_y, pred_val_y))
     break
 
-for thresh in np.arange(0.1, 0.201, 0.01):
-    thresh = np.round(thresh, 2)
-    print("F1 score at threshold {0} is {1}".format(thresh, metrics.f1_score(val_y, (pred_val_y>thresh).astype(int))))
-eli5.show_weights(model, vec=tfidf_vec, top=100, feature_filter=lambda x: x != '<BIAS>')
+def threshscore(pred, truth):
+    for thresh in np.arange(0.01, 0.801, 0.01):
+        thresh = np.round(thresh, 2)
+        print("F1 score at threshold {0} is {1}".format(thresh, metrics.f1_score(truth, (pred>thresh).astype(int))))
+
+class PuncClassifier(object):
+    def __init__(self, symbols):
+        self.symbols = symbols
+        self.probs = {}
+        self.max_count = 2
+    def fit(self, X, y):
+        for sym in self.symbols:
+            punc_counts = []
+            for sentence in X:
+                punc_counts.append( sentence.count(sym) )
+            self.probs[sym] = np.zeros(self.max_count+1)
+            for n in range(self.max_count):
+                res = [t for v, t in zip(punc_counts, y) if v == n]
+                if len(res) == 0:
+                    self.probs[sym][n] = 0
+                else:
+                    self.probs[sym][n] = np.mean(res)
+            n = self.max_count
+            res = [t for v, t in zip(punc_counts, y) if v >= n]
+            if len(res) == 0:
+                self.probs[sym][n] = 0
+            else:
+                self.probs[sym][n] = np.mean(res)
+            print(sym, self.probs[sym])
+
+    def predict(self, X):
+        out = []
+        for sentence in X:
+            p_sincere = 1.0
+            for sym in self.symbols:
+                p_insincere = self.probs[sym][min(sentence.count(sym), self.max_count)]
+                p_sincere = (1 - p_insincere) * p_sincere
+                
+            out.append(1 - p_sincere)
+
+        return np.array(out)
+
+pc = PuncClassifier('?!-*')
+pc.fit(train_df['question_text'].values, train_df['target'].values)
+
+pred = pc.predict(test_df['question_text'])
+
+wakka = 1 - (model.predict_proba(test_tfidf)[:, 0] * (1 - pred))
+
+threshscore(wakka, test_df['target'])
