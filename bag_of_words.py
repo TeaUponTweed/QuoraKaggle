@@ -9,7 +9,9 @@ from sklearn.model_selection import train_test_split, KFold
 SEED = 12378
 
 # Load data
-all_data = pd.read_csv('../input/train.csv')
+all_data = pd.read_csv('../input/clean_train.csv')
+all_data = all_data.drop(np.where(np.any(pd.isna(all_data), 1))[0])
+
 train, test = train_test_split(all_data, test_size=0.1, random_state=SEED)
 
 # Get the tfidf vectors
