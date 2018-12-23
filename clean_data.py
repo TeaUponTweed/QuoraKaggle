@@ -1,14 +1,13 @@
 import functools
 import operator
 import re
+import os
 
 import pandas as pd
 from gensim.models import KeyedVectors
 from tqdm import tqdm
 
 tqdm.pandas()
-train = pd.read_csv("../input/train.csv")
-test = pd.read_csv("../input/test.csv")
 
 def build_vocab(sentences, verbose =  True):
     """
@@ -23,9 +22,6 @@ def build_vocab(sentences, verbose =  True):
             except KeyError:
                 vocab[word] = 1
     return vocab
-
-
-
 
 def check_coverage(vocab,embeddings_index):
     a = {}
@@ -68,7 +64,7 @@ def clean_numbers(x):
 
 
 def _get_mispell(mispell_dict):
-    mispell_re = re.compile('(%s)' % '|'.join(mispell_dict.keys()))
+    mispell_re = re.compile('(%s)' % '|'.join(mispell_dict.keys()), re.IGNORECASE)
     return mispell_dict, mispell_re
 
 
@@ -90,14 +86,16 @@ mispell_dict = {'colour':'color',
                 'instagram': 'social medium',
                 'whatsapp': 'social medium',
                 'snapchat': 'social medium',
-                'Brexit': 'Britain exit'
+                'snapchat': 'social medium',
+                'brexit': 'Britain exit',
+                'cheque': 'check'
                 }
 
 mispellings, mispellings_re = _get_mispell(mispell_dict)
 
 def replace_typical_misspell(text):
     def replace(match):
-        return mispellings[match.group(0)]
+        return mispellings[match.group(0).lower()]
 
     return mispellings_re.sub(replace, text)
 
@@ -111,7 +109,6 @@ def get_cleaned_sentences(df):
     to_remove = ['a','to','of','and']
     sentences = [[word for word in sentence if not word in to_remove] for sentence in tqdm(sentences)]
     return sentences
-
 
 
 class SpellChecker(object):
@@ -162,13 +159,26 @@ class SpellChecker(object):
 
 
 def main():
+
+    if os.path.isfile('../input/clean_train.csv') and os.path.isfile('../input/clean_test.csv'):
+        do_stuff = input('Already found cleaned data, continue? (Y/n)')
+        if do_stuff.lower() == 'n':
+            return
+
+    # Load Google News word2vec
     news_path = '../input/embeddings/GoogleNews-vectors-negative300/GoogleNews-vectors-negative300.bin'
     embeddings_index = KeyedVectors.load_word2vec_format(news_path, binary=True)
 
+    # Load data
+    train = pd.read_csv("../input/train.csv")
+    test = pd.read_csv("../input/test.csv")
+
+    # Clean questions
     train_sentences = get_cleaned_sentences(train)
     test_sentences = get_cleaned_sentences(test)
     vocab = build_vocab(train_sentences + test_sentences)
 
+    # Do basic spell checking
     WORDS = {word: count for word, count in vocab.items() if word in embeddings_index}
     spell_checker = SpellChecker(WORDS)
 
@@ -183,8 +193,15 @@ def main():
     new_train_sentences = list(gen_spellchecked_sentences(train_sentences))
     new_test_sentences = list(gen_spellchecked_sentences(test_sentences))
 
+    # Check how we've done
     vocab = build_vocab(new_train_sentences + new_test_sentences)
     oov = check_coverage(vocab,embeddings_index)
+
+    # Save new data
+    train['question_text'] = [' '.join(s) for s in new_train_sentences]
+    test['question_text'] = [' '.join(s) for s in new_test_sentences]
+    train.to_csv('../input/clean_train.csv')
+    test.to_csv('../input/clean_test.csv')
 
 
 if __name__ == '__main__':
