@@ -46,6 +46,16 @@ def check_coverage(vocab,embeddings_index):
 def clean_text(x):
 
     x = str(x)
+    
+    # Intelligent replacement
+    x = x.replace('?', ' question ')
+    x = x.replace('!', ' exclamation ')
+    x = x.replace('-', ' minus ')
+    x = x.replace('*', ' asterisk ')
+    x = x.replace('=', ' equals ')
+    x = x.replace('+', ' plus ')
+    x = x.replace('$', ' dollars ')
+
     for punct in "/-'":
         x = x.replace(punct, ' ')
     for punct in '&':
@@ -177,6 +187,7 @@ def main():
     train_sentences = get_cleaned_sentences(train)
     test_sentences = get_cleaned_sentences(test)
     vocab = build_vocab(train_sentences + test_sentences)
+    oov = check_coverage(vocab,embeddings_index)
 
     # Do basic spell checking
     WORDS = {word: count for word, count in vocab.items() if word in embeddings_index}
