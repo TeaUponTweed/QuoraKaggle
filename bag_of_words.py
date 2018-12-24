@@ -5,37 +5,65 @@ import matplotlib.pyplot as plt
 from sklearn import metrics, linear_model, multioutput
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split, KFold
+from gensim.models import KeyedVectors
 
 SEED = 12378
 
-# Load data
-all_data = pd.read_csv('../input/clean_train.csv')
-all_data = all_data.drop(np.where(np.any(pd.isna(all_data), 1))[0])
+def load_data():
+    # Load raw data
+    print('Loading raw data...')
+    raw_data = pd.read_csv('../input/train.csv')
+    raw = {}
+    raw['train'], raw['test'] = train_test_split(raw_data, test_size=0.1, random_state=SEED)
+    
+    # Load cleaned data
+    print('Loading cleaned data...')
+    clean_data = pd.read_csv('../input/clean_train.csv')
+    clean = {}
+    clean['train'], clean['test'] = train_test_split(clean_data, test_size=0.1, random_state=SEED)
+    
+    assert all(np.equal(raw['train'].qid, clean['train'].qid)), 'Train data doesn\'t match'
+    assert all(np.equal(raw['test'].qid, clean['test'].qid)), 'Test data doesn\'t match'
 
-train, test = train_test_split(all_data, test_size=0.1, random_state=SEED)
+    # Create tfidfs
+    print('Building raw tfidfs...')
+    raw_tfidf = fit_tfidf(raw_data, raw['train'], raw['test'])
+    print('Building clean tfidfs...')
+    clean_tfidf = fit_tfidf(clean_data, clean['train'], clean['test'])
 
-# Get the tfidf vectors
-tfidf_vec = TfidfVectorizer(stop_words='english', ngram_range=(1,3))
+    def build_df(type_):
+        return {
+            'raw_text':     raw[type_].question_text.values, 
+            'raw_tfidf':    raw_tfidf[type_], 
+            'clean_text':   clean[type_].question_text.values, 
+            'clean_tfidf':  clean_tfidf[type_], 
+            'target':       raw[type_].target.values,
+            'qid':          raw[type_].qid.values }
 
-# Tokenize some punctuation
-for punc in '?!-*=+':
-    tfidf_vec.token_pattern += '|\\' + punc
+    # Combine
+    return {'train': build_df('train'), 'test': build_df('test')}
 
-# Fit everything to the model
-tfidf_vec.fit_transform(all_data['question_text'].values.tolist())
-tfidf = {}
-tfidf['train'] = tfidf_vec.transform(train['question_text'].values.tolist())
-tfidf['test'] = tfidf_vec.transform(test['question_text'].values.tolist())
+def fit_tfidf(all_data, train, test):
+    # Get the tfidf vectors
+    tfidf_vec = TfidfVectorizer(stop_words='english', ngram_range=(1,3))
 
-# Format
-out_data = {'train': train['target'].values, 'test': test['target'].values}
+    # Tokenize some punctuation
+    for punc in '?!-*=+':
+        tfidf_vec.token_pattern += '|\\' + punc
+
+    # Fit everything to the model
+    tfidf_vec.fit_transform(all_data['question_text'].values.tolist())
+    tfidf = {}
+    tfidf['train'] = tfidf_vec.transform(train['question_text'].values.tolist())
+    tfidf['test'] = tfidf_vec.transform(test['question_text'].values.tolist())
+    return tfidf
 
 class Predictor(object):
-    def __init__(self, model, kf_splits, out_data, in_data):
+    def __init__(self, model, kf_splits, data, data_type):
         self.model = model
         self.kf = KFold(n_splits=kf_splits, shuffle=True, random_state=SEED)
-        self.out_data = out_data
-        self.in_data = in_data
+        self.data = {'train': {'X': data['train'][data_type], 'y': data['train']['target']}, 
+                     'test':  {'X': data['test'][data_type],  'y': data['test']['target']}}
         if callable(getattr(self.model, 'predict_proba', None)):
             self.predict = lambda x: self.model.predict_proba(x)[:,1]
         else:
@@ -44,10 +72,9 @@ class Predictor(object):
     def fit(self):
         """ Fit model """
         print('Building model...')
-        X, y = self.in_data['train'], self.out_data['train']
-        X_test, y_test = self.in_data['test'], self.out_data['test']
 
-        for n, (ix_dev, ix_val) in enumerate(self.kf.split(self.out_data['train'])):
+        X, y = self.data['train']['X'], self.data['train']['y']
+        for n, (ix_dev, ix_val) in enumerate(self.kf.split(y)):
             print(f'Fitting on split {n}')
 
             # Run model on development and validation datasets
@@ -59,49 +86,42 @@ class Predictor(object):
             pred_train = self.predict(val_X)
             train_score = metrics.log_loss(val_y, pred_train)
             print(f'Train: {train_score}')
-            pred_test = self.predict(X_test)
-            test_score = metrics.log_loss(y_test, pred_test)
+
+            pred_test = self.predict(self.data['test']['X'])
+            test_score = metrics.log_loss(self.data['test']['y'], pred_test)
             print(f'Test: {test_score}')
 
 class Ensembler(object):
-    def __init__(self, predictors, model):
+    def __init__(self, predictors, model, kf_splits, data, data_type):
         self.model = multioutput.MultiOutputRegressor(model)
-        self.kf = predictors[0].kf
-        self.in_data = predictors[0].in_data
-        self.out_data = predictors[0].out_data
-        self.out_weights = {}
         self.predictors = predictors
+        self.kf = KFold(n_splits=kf_splits, shuffle=True, random_state=SEED)
+        self.data = {'train': {'X': data['train'][data_type], 'y': data['train']['target'], 'w': {}}, 
+                     'test':  {'X': data['test'][data_type],  'y': data['test']['target'], 'w': {}}}
 
         # Format output as weights of the various predictors
-        for t in ['train','test']:
-            truth = predictors[0].out_data[t][:]
+        for t in self.data.keys():
+            truth = self.data[t]['y'][:]
             error = np.zeros([truth.shape[0], len(predictors)])
             for ixp, p in enumerate(predictors):
-                error[:,ixp] = np.abs(truth - p.predict(self.in_data[t]))
+                error[:,ixp] = np.abs(truth - p.predict(p.data[t]['X']))
             
-            self.out_weights[t] = np.zeros(error.shape)
+            self.data[t]['w'] = np.zeros(error.shape)
             for ix_row in range(error.shape[0]):
                 inv_err = 1 / error[ix_row,:] 
-                self.out_weights[t][ix_row,:] = inv_err / np.sum(inv_err)
+                self.data[t]['w'][ix_row,:] = inv_err / np.sum(inv_err)
 
-        # Set prediction function
-        if callable(getattr(self.model, 'predict_proba', None)):
-            self.f_predict = lambda x: self.model.predict_proba(x)[:,1]
-        else:
-            self.f_predict = lambda x: self.model.predict(x)
-
-    def predict(self, x):
-        weights = self.model.predict(x)
-        preds = np.array([p.predict(x) for p in self.predictors]).T
+    def predict(self, ens_x, pred_x):
+        weights = self.model.predict(ens_x)
+        preds = np.array([p.predict(x) for x,p in zip(pred_x, self.predictors)]).T
         return np.sum(weights*preds, 1)
 
     def fit(self):
         """ Fit model """
         print('Building model...')
-        X, w, y = self.in_data['train'], self.out_weights['train'], self.out_data['train']
-        X_test, y_test = self.in_data['test'], self.out_data['test']
 
-        for n, (ix_dev, ix_val) in enumerate(self.kf.split(self.out_data['train'])):
+        X, w, y = self.data['train']['X'], self.data['train']['w'], self.data['train']['y']
+        for n, (ix_dev, ix_val) in enumerate(self.kf.split(y)):
             print(f'Fitting on split {n}')
 
             # Run model on development and validation datasets
@@ -111,44 +131,61 @@ class Ensembler(object):
             self.model.fit(dev_X, dev_w)
 
             # Predict and validate
-            pred_train = self.predict(val_X)
+            p_val_X = [p.data['train']['X'][ix_val] for p in self.predictors]
+            pred_train = self.predict(val_X, p_val_X)
             train_score = metrics.log_loss(val_y, pred_train)
             print(f'Train: {train_score}')
-            pred_test = self.predict(X_test)
-            test_score = metrics.log_loss(y_test, pred_test)
+
+            p_test_X = [p.data['test']['X'] for p in self.predictors]
+            pred_test = self.predict(self.data['test']['X'], p_test_X)
+            test_score = metrics.log_loss(self.data['test']['y'], pred_test)
             print(f'Test: {test_score}')
 
-# Logistic Regression
-logr_reg_model = linear_model.LogisticRegression(C=5., solver='sag')
-pred_logr_reg = Predictor(logr_reg_model, 3, out_data, tfidf)
-pred_logr_reg.fit()
 
-# Ridge Regression
-rid_reg_model = linear_model.Ridge()
-pred_rid_reg = Predictor(rid_reg_model, 3, out_data, tfidf)
-pred_rid_reg.fit()
+def plot_results(data, pred, do_plot=False):
+    scores = []
+    thresholds = np.arange(0, 1, 0.001)
+    for thresh in thresholds:
+        thresh = np.round(thresh, 2)
+        score = metrics.f1_score(data['test']['target'], (pred>thresh).astype(int))
+        scores.append(score)
 
-# Ensemble
-predictors = [pred_logr_reg, pred_rid_reg]
-ens_model = linear_model.Ridge()
-ens = Ensembler(predictors, ens_model)
-ens.fit()
+    best_score = max(scores)
+    best_thresh = thresholds[np.argmax(scores)]
+    print(f"Best score is {best_score} at threshold {best_thresh}")
 
-# Check out results
-pred = ens.predict(tfidf['test'])
-test_y = out_data['test']
-scores = []
-thresholds = np.arange(0, 1, 0.01)
-for thresh in thresholds:
-    thresh = np.round(thresh, 2)
-    score = metrics.f1_score(test_y, (pred>thresh).astype(int))
-    scores.append(score)
-    
-plt.figure()
-plt.plot(thresholds, scores)
+    if do_plot:
+        plt.figure()
+        plt.plot(thresholds, scores)
+        plt.show()
 
-best_score = max(scores)
-best_thresh = thresholds[np.argmax(scores)]
-print(f"Best score is {best_score} at threshold {best_thresh}")
 
-plt.show()
+def main():
+    data = load_data()
+
+    # Logistic Regression
+    model = linear_model.LogisticRegression(C=5., solver='sag')
+    p_logistic_raw = Predictor(model, 3, data, 'raw_tfidf')
+    p_logistic_raw.fit()
+    p_logistic_clean = Predictor(model, 3, data, 'clean_tfidf')
+    p_logistic_clean.fit()
+
+    # Ridge Regression
+    model = linear_model.Ridge()
+    p_ridge_raw = Predictor(model, 3, data, 'raw_tfidf')
+    p_ridge_raw.fit()
+    p_ridge_clean = Predictor(model, 3, data, 'clean_tfidf')
+    p_ridge_clean.fit()
+
+    # Ensembler
+    predictors = [p_logistic_raw, p_logistic_clean, p_ridge_raw, p_ridge_clean]
+    model = linear_model.Ridge()
+    ens = Ensembler(predictors, model, 3, data, 'raw_tfidf')
+    ens.fit()
+
+    # Show results
+    pred = ens.predict(ens.data['test']['X'], [p.data['test']['X'] for p in ens.predictors])
+    plot_results(data, pred)
+
+if __name__ == '__main__':
+    main()
