@@ -4,6 +4,7 @@ import re
 import os
 
 import pandas as pd
+import numpy as np
 from gensim.models import KeyedVectors
 from tqdm import tqdm
 
@@ -175,13 +176,19 @@ def main():
         if do_stuff.lower() == 'n':
             return
 
-    # Load Google News word2vec
-    news_path = '../input/embeddings/GoogleNews-vectors-negative300/GoogleNews-vectors-negative300.bin'
-    embeddings_index = KeyedVectors.load_word2vec_format(news_path, binary=True)
-
     # Load data
     train = pd.read_csv("../input/train.csv")
     test = pd.read_csv("../input/test.csv")
+
+    # Remove empty questions
+    ix_drop = [q=="\"" or q=="''" or len(q)==0 for q in train['question_text']]
+    if any(ix_drop):
+        train = train.drop(np.where(ix_drop)[0])
+        train.to_csv('../input/train.csv')
+
+    # Load Google News word2vec
+    news_path = '../input/embeddings/GoogleNews-vectors-negative300/GoogleNews-vectors-negative300.bin'
+    embeddings_index = KeyedVectors.load_word2vec_format(news_path, binary=True)
 
     # Clean questions
     train_sentences = get_cleaned_sentences(train)
