@@ -25,6 +25,14 @@ def load_data():
     assert all(np.equal(raw['train'].qid, clean['train'].qid)), 'Train data doesn\'t match'
     assert all(np.equal(raw['test'].qid, clean['test'].qid)), 'Test data doesn\'t match'
 
+    # Load embeddings
+    print('Loading word2vec embeddings...')
+    emb_file = '../input/embeddings/GoogleNews-vectors-negative300/GoogleNews-vectors-negative300.bin'
+    emb_model = KeyedVectors.load_word2vec_format(emb_file, binary=True)
+    print('Converting to embeddings...')
+    emb_bags = {'train': word2vec_bags(clean['train'], emb_model), 
+                'test': word2vec_bags(clean['test'], emb_model)}
+
     # Create tfidfs
     print('Building raw tfidfs...')
     raw_tfidf = fit_tfidf(raw_data, raw['train'], raw['test'])
@@ -37,6 +45,7 @@ def load_data():
             'raw_tfidf':    raw_tfidf[type_], 
             'clean_text':   clean[type_].question_text.values, 
             'clean_tfidf':  clean_tfidf[type_], 
+            'emb_bags':     emb_bags[type_],
             'target':       raw[type_].target.values,
             'qid':          raw[type_].qid.values }
 
@@ -44,7 +53,7 @@ def load_data():
     return {'train': build_df('train'), 'test': build_df('test')}
 
 def fit_tfidf(all_data, train, test):
-    # Get the tfidf vectors
+    """ Get the tfidf vectors for inputted data """
     tfidf_vec = TfidfVectorizer(stop_words='english', ngram_range=(1,3))
 
     # Tokenize some punctuation
@@ -57,6 +66,15 @@ def fit_tfidf(all_data, train, test):
     tfidf['train'] = tfidf_vec.transform(train['question_text'].values.tolist())
     tfidf['test'] = tfidf_vec.transform(test['question_text'].values.tolist())
     return tfidf
+
+def word2vec_bags(data, emb_model):
+    """ For each sentence, add the constituent vectors """
+    sentences = data['question_text'].values.tolist()
+    sums = []
+    for s in sentences:
+        vecs = [emb_model.get_vector(w) for w in s.split(' ') if w in emb_model]
+        sums.append( np.sum(vecs, axis=0) )
+    return np.array(sums)
 
 class Predictor(object):
     def __init__(self, model, kf_splits, data, data_type):
