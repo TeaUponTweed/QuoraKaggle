@@ -185,18 +185,31 @@ def main():
     model = linear_model.LogisticRegression(C=5., solver='sag')
     p_logistic_raw = Predictor(model, 3, data, 'raw_tfidf')
     p_logistic_raw.fit()
+
+    model = linear_model.LogisticRegression(C=5., solver='sag')
     p_logistic_clean = Predictor(model, 3, data, 'clean_tfidf')
     p_logistic_clean.fit()
+
+    model = linear_model.LogisticRegression(C=5., solver='sag')
+    p_logistic_emb = Predictor(model, 3, data, 'emb_bags')
+    p_logistic_emb.fit()
 
     # Ridge Regression
     model = linear_model.Ridge()
     p_ridge_raw = Predictor(model, 3, data, 'raw_tfidf')
     p_ridge_raw.fit()
+
+    model = linear_model.Ridge()
     p_ridge_clean = Predictor(model, 3, data, 'clean_tfidf')
     p_ridge_clean.fit()
 
+    model = linear_model.RidgeCV()
+    p_ridge_emb = Predictor(model, 3, data, 'emb_bags')
+    p_ridge_emb.fit()
+
     # Ensembler
-    predictors = [p_logistic_raw, p_logistic_clean, p_ridge_raw, p_ridge_clean]
+    predictors = [p_logistic_raw, p_logistic_clean, p_logistic_emb, 
+                  p_ridge_raw, p_ridge_clean, p_ridge_emb]
     model = linear_model.Ridge()
     ens = Ensembler(predictors, model, 3, data, 'raw_tfidf')
     ens.fit()
